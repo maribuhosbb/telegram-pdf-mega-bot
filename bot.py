@@ -83,49 +83,30 @@ def set_webhook_route():
         return f"Webhook set error: {e}", 500
 
 
-def run_megatools_command(args):
-    cmd = [
-        args[0],
+def run_megatools_command(cmd):
+    import subprocess
+
+    full_cmd = [
+        *cmd,
         "--username", MEGA_EMAIL,
         "--password", MEGA_PASSWORD,
-        "--no-ask-password",
-        *args[1:]
+        "--no-ask-password"
     ]
 
-    safe_cmd = []
-    skip_next = False
-    for i, part in enumerate(cmd):
-        if skip_next:
-            skip_next = False
-            continue
-        if part == "--password" and i + 1 < len(cmd):
-            safe_cmd.extend(["--password", "******"])
-            skip_next = True
-        else:
-            safe_cmd.append(part)
+    logger.info("MEGATOOLS CMD: %s", " ".join(full_cmd))
 
-    logger.info("MEGATOOLS CMD: %s", " ".join(shlex.quote(x) for x in safe_cmd))
-
-try:
     result = subprocess.run(
-        cmd,
+        full_cmd,
         capture_output=True,
-        text=True,
-        check=False,
-        timeout=180
+        text=True
     )
-except subprocess.TimeoutExpired:
-    raise RuntimeError("Помилка megatools: команда зависла більше ніж на 180 секунд")
 
     logger.info("MEGATOOLS EXIT CODE: %s", result.returncode)
-    logger.info("MEGATOOLS STDOUT: %s", result.stdout.strip())
-    logger.info("MEGATOOLS STDERR: %s", result.stderr.strip())
+    logger.info("MEGATOOLS STDOUT: %s", result.stdout)
+    logger.info("MEGATOOLS STDERR: %s", result.stderr)
 
     if result.returncode != 0:
-        raise RuntimeError(
-            f"Помилка megatools (code={result.returncode}): "
-            f"{result.stderr.strip() or result.stdout.strip() or 'невідома помилка'}"
-        )
+        raise RuntimeError(f"Помилка megatools (code={result.returncode}): {result.stderr}")
 
     return result.stdout.strip()
 
