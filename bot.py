@@ -77,6 +77,15 @@ PORT = int(os.getenv("PORT", "10000"))
 
 # Проверяем, что обязательные переменные окружения заданы
 if not BOT_TOKEN or not MEGA_EMAIL or not MEGA_PASSWORD:
+    # Импортируем requests для проверки токена Telegram прямо при запуске
+import requests
+
+# Проверяем токен, который реально пришёл из Render environment
+try:
+    check_response = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=20)
+    logger.info(f"TELEGRAM TOKEN CHECK: status={check_response.status_code}, body={check_response.text}")
+except Exception as e:
+    logger.exception(f"Ошибка проверки BOT_TOKEN через getMe: {e}")
     # Если чего-то не хватает — останавливаем запуск с понятной ошибкой
     raise ValueError("Не заданы BOT_TOKEN, MEGA_EMAIL или MEGA_PASSWORD в переменных окружения.")
 
