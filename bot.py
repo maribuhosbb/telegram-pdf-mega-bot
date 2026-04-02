@@ -106,12 +106,16 @@ def run_megatools_command(args):
 
     logger.info("MEGATOOLS CMD: %s", " ".join(shlex.quote(x) for x in safe_cmd))
 
+    try:
     result = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
-        check=False
+        check=False,
+        timeout=180
     )
+except subprocess.TimeoutExpired:
+    raise RuntimeError("Помилка megatools: команда зависла більше ніж на 180 секунд")
 
     logger.info("MEGATOOLS EXIT CODE: %s", result.returncode)
     logger.info("MEGATOOLS STDOUT: %s", result.stdout.strip())
@@ -306,6 +310,8 @@ def handle_document(message):
             ensure_mega_folder(MEGA_SPLIT_FOLDER)
 
             upload_file_to_mega(original_pdf_path, MEGA_ORIGINAL_FOLDER)
+            import time
+time.sleep(2)
 
             output_folder = os.path.join(temp_dir, "split_pages")
             os.makedirs(output_folder, exist_ok=True)
@@ -314,8 +320,12 @@ def handle_document(message):
             split_files = split_pdf_by_pages(original_pdf_path, output_folder)
             logger.info("PDF: splitting done, files=%s", len(split_files))
 
-            for split_file in split_files:
-                upload_file_to_mega(split_file, MEGA_SPLIT_FOLDER)
+            import time
+
+for index, split_file in enumerate(split_files, start=1):
+    logger.info("UPLOAD SPLIT FILE %s/%s -> %s", index, len(split_files), split_file)
+    upload_file_to_mega(split_file, MEGA_SPLIT_FOLDER)
+    time.sleep(1)
 
             bot.send_message(
                 message.chat.id,
