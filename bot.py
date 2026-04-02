@@ -58,6 +58,11 @@ logger = logging.getLogger(__name__)
 
 # Получаем Telegram-токен из переменных окружения Render
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+# Показываем маску токена из Render, чтобы проверить какой токен реально загружен
+if BOT_TOKEN:
+    logger.info(f"BOT_TOKEN MASK FROM RENDER: {BOT_TOKEN[:10]}...{BOT_TOKEN[-6:]}")
+else:
+    logger.info("BOT_TOKEN MASK FROM RENDER: BOT_TOKEN is empty")
 
 # Получаем e-mail от Mega из переменных окружения Render
 MEGA_EMAIL = os.getenv("MEGA_EMAIL")
@@ -88,6 +93,13 @@ except Exception as e:
     logger.exception(f"Ошибка проверки BOT_TOKEN через getMe: {e}")
     # Если чего-то не хватает — останавливаем запуск с понятной ошибкой
     raise ValueError("Не заданы BOT_TOKEN, MEGA_EMAIL или MEGA_PASSWORD в переменных окружения.")
+    import requests
+
+try:
+    check_response = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=20)
+    logger.info(f"TELEGRAM TOKEN CHECK: status={check_response.status_code}, body={check_response.text}")
+except Exception as e:
+    logger.exception(f"Ошибка проверки BOT_TOKEN через getMe: {e}")
 
 
 # =========================
