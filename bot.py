@@ -106,7 +106,7 @@ def run_megatools_command(args):
 
     logger.info("MEGATOOLS CMD: %s", " ".join(shlex.quote(x) for x in safe_cmd))
 
-    try:
+try:
     result = subprocess.run(
         cmd,
         capture_output=True,
