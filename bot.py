@@ -44,10 +44,6 @@ import pdfplumber
 if not hasattr(asyncio, "coroutine"):
     asyncio.coroutine = py_types.coroutine
 
-# Импортируем Mega для работы с облаком Mega
-from mega import Mega
-
-
 # =========================
 # ЛОГИРОВАНИЕ
 # =========================
@@ -175,31 +171,6 @@ def set_webhook_route():
 # =========================
 # РАБОТА С MEGA
 # =========================
-
-def mega_login():
-    # Пишем в лог, что начинаем логин в Mega
-    logger.info("MEGA: start login")
-
-    try:
-        # Создаём объект Mega
-        mega = Mega()
-
-        # Выполняем вход в Mega по e-mail и паролю
-        mega_client = mega.login(MEGA_EMAIL, MEGA_PASSWORD)
-
-        # Пишем в лог, что логин успешен
-        logger.info("MEGA: login success")
-
-        # Возвращаем авторизованный объект Mega
-        return mega_client
-
-    except Exception as e:
-        # Пишем подробную ошибку в лог
-        logger.exception("MEGA: login failed")
-
-        # Пробрасываем понятную ошибку выше
-        raise RuntimeError(f"Помилка входу в Mega: {e}") from e
-
 
 def find_or_create_folder(mega_client, folder_name):
     # Пишем в лог, что ищем или создаём папку
