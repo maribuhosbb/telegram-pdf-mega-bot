@@ -1,19 +1,17 @@
 services:
   - type: web
     name: telegram-pdf-mega-bot
-    runtime: python
+    runtime: docker
     plan: free
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "python bot.py"
     autoDeploy: true
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.13.5
       - key: BOT_TOKEN
         sync: false
       - key: MEGA_EMAIL
         sync: false
       - key: MEGA_PASSWORD
+        sync: false
+      - key: WEBHOOK_SECRET
         sync: false
       - key: MEGA_ORIGINAL_FOLDER
         value: Orginal
