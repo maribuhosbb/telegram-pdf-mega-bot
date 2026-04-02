@@ -143,6 +143,8 @@ def ensure_mega_folder(folder_name):
 
 
 def upload_file_to_mega(file_path, folder_name):
+    import time
+    time.sleep(2)
     filename = os.path.basename(file_path)
 
     try:
@@ -156,7 +158,6 @@ def upload_file_to_mega(file_path, folder_name):
         "--path", f"/Root/{folder_name}/",
         file_path
     ])
-
 
 def extract_text_from_page(pdf_path, page_number):
     with pdfplumber.open(pdf_path) as pdf:
@@ -291,6 +292,8 @@ def handle_document(message):
         return
 
     try:
+        import time
+
         bot.send_message(message.chat.id, "Файл отримано. Завантажую на Mega та розділяю...")
 
         logger.info("TG: getting file info")
@@ -310,8 +313,7 @@ def handle_document(message):
             ensure_mega_folder(MEGA_SPLIT_FOLDER)
 
             upload_file_to_mega(original_pdf_path, MEGA_ORIGINAL_FOLDER)
-            import time
-time.sleep(2)
+            time.sleep(2)
 
             output_folder = os.path.join(temp_dir, "split_pages")
             os.makedirs(output_folder, exist_ok=True)
@@ -320,12 +322,10 @@ time.sleep(2)
             split_files = split_pdf_by_pages(original_pdf_path, output_folder)
             logger.info("PDF: splitting done, files=%s", len(split_files))
 
-            import time
-
-for index, split_file in enumerate(split_files, start=1):
-    logger.info("UPLOAD SPLIT FILE %s/%s -> %s", index, len(split_files), split_file)
-    upload_file_to_mega(split_file, MEGA_SPLIT_FOLDER)
-    time.sleep(1)
+            for index, split_file in enumerate(split_files, start=1):
+                logger.info("UPLOAD SPLIT FILE %s/%s -> %s", index, len(split_files), split_file)
+                upload_file_to_mega(split_file, MEGA_SPLIT_FOLDER)
+                time.sleep(1)
 
             bot.send_message(
                 message.chat.id,
