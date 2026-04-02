@@ -7,6 +7,8 @@ services:
     startCommand: "python bot.py"
     autoDeploy: true
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.5
       - key: BOT_TOKEN
         sync: false
       - key: MEGA_EMAIL
