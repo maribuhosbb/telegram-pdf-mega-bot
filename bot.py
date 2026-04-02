@@ -13,6 +13,15 @@ import logging
 # Импортируем threading для запуска Flask-сервера в отдельном потоке
 import threading
 
+# Импортируем asyncio для совместимости старых библиотек
+import asyncio
+
+# Импортируем types как py_types, чтобы вернуть asyncio.coroutine
+import types as py_types
+
+# Импортируем requests для проверки токена Telegram при запуске
+import requests
+
 # Импортируем Flask, чтобы Render видел открытый веб-порт и не останавливал сервис
 from flask import Flask
 
@@ -31,12 +40,10 @@ from PyPDF2 import PdfWriter
 # Импортируем pdfplumber для извлечения текста из PDF
 import pdfplumber
 
-import asyncio
-import types as py_types
-
 # Возвращаем asyncio.coroutine для старых библиотек в новых версиях Python
 if not hasattr(asyncio, "coroutine"):
     asyncio.coroutine = py_types.coroutine
+
 # Импортируем Mega для работы с облаком Mega
 from mega import Mega
 
@@ -58,11 +65,6 @@ logger = logging.getLogger(__name__)
 
 # Получаем Telegram-токен из переменных окружения Render
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-# Показываем маску токена из Render, чтобы проверить какой токен реально загружен
-if BOT_TOKEN:
-    logger.info(f"BOT_TOKEN MASK FROM RENDER: {BOT_TOKEN[:10]}...{BOT_TOKEN[-6:]}")
-else:
-    logger.info("BOT_TOKEN MASK FROM RENDER: BOT_TOKEN is empty")
 
 # Получаем e-mail от Mega из переменных окружения Render
 MEGA_EMAIL = os.getenv("MEGA_EMAIL")
@@ -80,26 +82,26 @@ MEGA_SPLIT_FOLDER = os.getenv("MEGA_SPLIT_FOLDER", "Kvitancii")
 PORT = int(os.getenv("PORT", "10000"))
 
 
+# Показываем маску токена из Render, чтобы понять какой токен реально загружен
+if BOT_TOKEN and len(BOT_TOKEN) > 16:
+    logger.info("BOT_TOKEN MASK FROM RENDER: %s...%s", BOT_TOKEN[:10], BOT_TOKEN[-6:])
+else:
+    logger.info("BOT_TOKEN MASK FROM RENDER: %r", BOT_TOKEN)
+
+
 # Проверяем, что обязательные переменные окружения заданы
 if not BOT_TOKEN or not MEGA_EMAIL or not MEGA_PASSWORD:
-    # Импортируем requests для проверки токена Telegram прямо при запуске
-import requests
+    # Если чего-то не хватает — останавливаем запуск с понятной ошибкой
+    raise ValueError("Не заданы BOT_TOKEN, MEGA_EMAIL или MEGA_PASSWORD в переменных окружения.")
+
 
 # Проверяем токен, который реально пришёл из Render environment
 try:
     check_response = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=20)
-    logger.info(f"TELEGRAM TOKEN CHECK: status={check_response.status_code}, body={check_response.text}")
+    logger.info("TELEGRAM TOKEN CHECK STATUS: %s", check_response.status_code)
+    logger.info("TELEGRAM TOKEN CHECK BODY: %s", check_response.text)
 except Exception as e:
-    logger.exception(f"Ошибка проверки BOT_TOKEN через getMe: {e}")
-    # Если чего-то не хватает — останавливаем запуск с понятной ошибкой
-    raise ValueError("Не заданы BOT_TOKEN, MEGA_EMAIL или MEGA_PASSWORD в переменных окружения.")
-    import requests
-
-try:
-    check_response = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=20)
-    logger.info(f"TELEGRAM TOKEN CHECK: status={check_response.status_code}, body={check_response.text}")
-except Exception as e:
-    logger.exception(f"Ошибка проверки BOT_TOKEN через getMe: {e}")
+    logger.exception("Ошибка проверки BOT_TOKEN через getMe: %s", e)
 
 
 # =========================
@@ -136,10 +138,10 @@ def mega_login():
     mega = Mega()
 
     # Выполняем вход в Mega по e-mail и паролю
-    m = mega.login(MEGA_EMAIL, MEGA_PASSWORD)
+    mega_client = mega.login(MEGA_EMAIL, MEGA_PASSWORD)
 
     # Возвращаем авторизованный объект Mega
-    return m
+    return mega_client
 
 
 def find_or_create_folder(mega_client, folder_name):
@@ -158,7 +160,6 @@ def find_or_create_folder(mega_client, folder_name):
 
     # Если create_folder вернул словарь, забираем из него первый id
     if isinstance(new_folder, dict):
-        # Возвращаем id созданной папки
         return list(new_folder.values())[0]
 
     # Если вернулся id напрямую — возвращаем его
@@ -190,11 +191,12 @@ def extract_text_from_page(pdf_path, page_number):
 def extract_account_number(text):
     # Список шаблонов для поиска номера особового рахунку
     patterns = [
-    r"Особов(?:ий|ого)\s+рахунок[:\s]*([0-9A-Za-zА-Яа-яІіЇїЄєҐґ\-\/]{5,})",
-    r"Особовий\s+рах\w*[:\s]*([0-9A-Za-zА-Яа-яІіЇїЄєҐґ\-\/]{5,})",
-    r"Лицев(?:ой|ого)\s+счет[:\s]*([0-9A-Za-zА-Яа-яІіЇїЄєҐґ\-\/]{5,})",
-    r"ОР[:\s]*([0-9A-Za-zА-Яа-яІіЇїЄєҐґ\-\/]{5,})",
-]
+        r"Особов(?:ий|ого)\s+рахунок[:\s№]*([0-9A-Za-zА-Яа-яІіЇїЄєҐґ\-\/]{5,})",
+        r"Особовий\s+рах\w*[:\s№]*([0-9A-Za-zА-Яа-яІіЇїЄєҐґ\-\/]{5,})",
+        r"Лицев(?:ой|ого)\s+счет[:\s№]*([0-9A-Za-zА-Яа-яІіЇїЄєҐґ\-\/]{5,})",
+        r"\bОР[:\s№]*([0-9A-Za-zА-Яа-яІіЇїЄєҐґ\-\/]{5,})",
+    ]
+
     # Перебираем шаблоны поиска
     for pattern in patterns:
         # Ищем совпадение в тексте без учёта регистра
@@ -203,8 +205,13 @@ def extract_account_number(text):
         if match:
             return match.group(1).strip()
 
-    # Если не нашли — пробуем запасной вариант: длинное число рядом со словом рахунок
-    fallback = re.search(r"рах\w*[^\w]{0,20}([0-9A-Za-zА-Яа-яІіЇїЄєҐґ\-\/]{5,})", text, re.IGNORECASE)
+    # Если не нашли — пробуем запасной вариант рядом со словом рахунок
+    fallback = re.search(
+        r"рах\w*[^\w]{0,20}([0-9A-Za-zА-Яа-яІіЇїЄєҐґ\-\/]{5,})",
+        text,
+        re.IGNORECASE
+    )
+
     # Если найден запасной вариант — возвращаем его
     if fallback:
         return fallback.group(1).strip()
@@ -216,6 +223,7 @@ def extract_account_number(text):
 def extract_year(text):
     # Ищем год формата 20xx
     match = re.search(r"\b(20\d{2})\b", text)
+
     # Если нашли год — возвращаем его
     if match:
         return match.group(1)
@@ -246,19 +254,16 @@ def extract_month(text):
 
     # Ищем текстовый месяц
     for name, number in month_map.items():
-        # Если название месяца найдено в тексте — возвращаем его номер
         if name in lower_text:
             return number
 
     # Ищем дату вида 03.2026 или 03/2026
     match = re.search(r"\b(0?[1-9]|1[0-2])[./](20\d{2})\b", text)
-    # Если нашли — возвращаем месяц с ведущим нулём
     if match:
         return match.group(1).zfill(2)
 
     # Ищем дату вида 2026-03
     match = re.search(r"\b(20\d{2})[-./](0?[1-9]|1[0-2])\b", text)
-    # Если нашли — возвращаем месяц с ведущим нулём
     if match:
         return match.group(2).zfill(2)
 
@@ -391,7 +396,6 @@ def handle_document(message):
 
             # Сохраняем скачанный PDF на диск
             with open(original_pdf_path, "wb") as new_file:
-                # Записываем содержимое файла
                 new_file.write(downloaded_file)
 
             # Авторизуемся в Mega
