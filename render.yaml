@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: telegram-pdf-mega-bot
+    runtime: docker
+    plan: free
+    autoDeploy: true
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: MEGA_EMAIL
+        sync: false
+      - key: MEGA_PASSWORD
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
+      - key: MEGA_ORIGINAL_FOLDER
+        value: Orginal
+      - key: MEGA_SPLIT_FOLDER
+        value: Kvitancii
