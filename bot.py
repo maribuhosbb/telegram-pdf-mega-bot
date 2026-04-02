@@ -31,6 +31,12 @@ from PyPDF2 import PdfWriter
 # Импортируем pdfplumber для извлечения текста из PDF
 import pdfplumber
 
+import asyncio
+import types as py_types
+
+# Возвращаем asyncio.coroutine для старых библиотек в новых версиях Python
+if not hasattr(asyncio, "coroutine"):
+    asyncio.coroutine = py_types.coroutine
 # Импортируем Mega для работы с облаком Mega
 from mega import Mega
 
@@ -163,12 +169,11 @@ def extract_text_from_page(pdf_path, page_number):
 def extract_account_number(text):
     # Список шаблонов для поиска номера особового рахунку
     patterns = [
-        r"Особов(?:ий|ого)\s+рахунок[:\s]*([0-9\-\/]{5,})",
-        r"Особовий\s+рах\w*[:\s]*([0-9\-\/]{5,})",
-        r"Лицев(?:ой|ого)\s+счет[:\s]*([0-9\-\/]{5,})",
-        r"ОР[:\s]*([0-9\-\/]{5,})",
-    ]
-
+    r"Особов(?:ий|ого)\s+рахунок[:\s]*([0-9A-Za-zА-Яа-яІіЇїЄєҐґ\-\/]{5,})",
+    r"Особовий\s+рах\w*[:\s]*([0-9A-Za-zА-Яа-яІіЇїЄєҐґ\-\/]{5,})",
+    r"Лицев(?:ой|ого)\s+счет[:\s]*([0-9A-Za-zА-Яа-яІіЇїЄєҐґ\-\/]{5,})",
+    r"ОР[:\s]*([0-9A-Za-zА-Яа-яІіЇїЄєҐґ\-\/]{5,})",
+]
     # Перебираем шаблоны поиска
     for pattern in patterns:
         # Ищем совпадение в тексте без учёта регистра
@@ -178,7 +183,7 @@ def extract_account_number(text):
             return match.group(1).strip()
 
     # Если не нашли — пробуем запасной вариант: длинное число рядом со словом рахунок
-    fallback = re.search(r"рах\w*[^\d]{0,20}(\d{5,})", text, re.IGNORECASE)
+    fallback = re.search(r"рах\w*[^\w]{0,20}([0-9A-Za-zА-Яа-яІіЇїЄєҐґ\-\/]{5,})", text, re.IGNORECASE)
     # Если найден запасной вариант — возвращаем его
     if fallback:
         return fallback.group(1).strip()
