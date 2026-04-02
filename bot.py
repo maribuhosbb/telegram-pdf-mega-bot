@@ -177,41 +177,87 @@ def set_webhook_route():
 # =========================
 
 def mega_login():
-    # Создаём объект Mega
-    mega = Mega()
+    # Пишем в лог, что начинаем логин в Mega
+    logger.info("MEGA: start login")
 
-    # Выполняем вход в Mega
-    mega_client = mega.login(MEGA_EMAIL, MEGA_PASSWORD)
+    try:
+        # Создаём объект Mega
+        mega = Mega()
 
-    # Возвращаем клиента
-    return mega_client
+        # Выполняем вход в Mega по e-mail и паролю
+        mega_client = mega.login(MEGA_EMAIL, MEGA_PASSWORD)
+
+        # Пишем в лог, что логин успешен
+        logger.info("MEGA: login success")
+
+        # Возвращаем авторизованный объект Mega
+        return mega_client
+
+    except Exception as e:
+        # Пишем подробную ошибку в лог
+        logger.exception("MEGA: login failed")
+
+        # Пробрасываем понятную ошибку выше
+        raise RuntimeError(f"Помилка входу в Mega: {e}") from e
 
 
 def find_or_create_folder(mega_client, folder_name):
-    # Получаем структуру файлов Mega
-    files = mega_client.get_files()
+    # Пишем в лог, что ищем или создаём папку
+    logger.info("MEGA: find_or_create_folder start -> %s", folder_name)
 
-    # Перебираем все элементы
-    for file_id, info in files.items():
-        # Если нашли нужную папку, возвращаем её id
-        if info.get("a", {}).get("n") == folder_name and info.get("t") == 1:
-            return file_id
+    try:
+        # Получаем структуру файлов Mega
+        files = mega_client.get_files()
 
-    # Иначе создаём папку
-    new_folder = mega_client.create_folder(folder_name)
+        # Перебираем все элементы файловой структуры
+        for file_id, info in files.items():
+            # Проверяем, что это папка и её имя совпадает с нужным
+            if info.get("a", {}).get("n") == folder_name and info.get("t") == 1:
+                # Пишем в лог, что папка найдена
+                logger.info("MEGA: folder found -> %s", folder_name)
 
-    # Если вернулся словарь, берём первый id
-    if isinstance(new_folder, dict):
-        return list(new_folder.values())[0]
+                # Возвращаем идентификатор найденной папки
+                return file_id
 
-    # Иначе возвращаем как есть
-    return new_folder
+        # Если папка не найдена — создаём её
+        logger.info("MEGA: folder not found, creating -> %s", folder_name)
+        new_folder = mega_client.create_folder(folder_name)
+
+        # Если create_folder вернул словарь, забираем из него первый id
+        if isinstance(new_folder, dict):
+            folder_id = list(new_folder.values())[0]
+            logger.info("MEGA: folder created -> %s", folder_name)
+            return folder_id
+
+        # Если вернулся id напрямую — возвращаем его
+        logger.info("MEGA: folder created -> %s", folder_name)
+        return new_folder
+
+    except Exception as e:
+        # Пишем подробную ошибку в лог
+        logger.exception("MEGA: find_or_create_folder failed -> %s", folder_name)
+
+        # Пробрасываем понятную ошибку выше
+        raise RuntimeError(f"Помилка роботи з папкою Mega '{folder_name}': {e}") from e
 
 
 def upload_file_to_mega(mega_client, file_path, folder_id):
-    # Загружаем файл в Mega
-    mega_client.upload(file_path, folder_id)
+    # Пишем в лог, что начинаем загрузку файла
+    logger.info("MEGA: upload start -> %s", file_path)
 
+    try:
+        # Загружаем файл на Mega в указанную папку
+        mega_client.upload(file_path, folder_id)
+
+        # Пишем в лог, что загрузка успешна
+        logger.info("MEGA: upload success -> %s", file_path)
+
+    except Exception as e:
+        # Пишем подробную ошибку в лог
+        logger.exception("MEGA: upload failed -> %s", file_path)
+
+        # Пробрасываем понятную ошибку выше
+        raise RuntimeError(f"Помилка завантаження в Mega файла '{os.path.basename(file_path)}': {e}") from e
 
 # =========================
 # ИЗВЛЕЧЕНИЕ ДАННЫХ ИЗ PDF
@@ -408,33 +454,39 @@ def ask_for_pdf(message):
 
 
 @bot.message_handler(content_types=["document"])
+@bot.message_handler(content_types=["document"])
 def handle_document(message):
-    # Проверяем, что пользователь нажал кнопку
+    # Проверяем, что пользователь до этого нажал кнопку
     if message.chat.id not in waiting_for_pdf:
+        # Если кнопку не нажимал — сообщаем, что сначала нужно нажать кнопку
         bot.send_message(message.chat.id, "Спочатку натисни кнопку «Завантажити та Розділити».")
         return
 
-    # Проверяем расширение
+    # Проверяем, что прислан именно PDF
     if not message.document.file_name.lower().endswith(".pdf"):
+        # Если это не PDF — просим прислать PDF
         bot.send_message(message.chat.id, "Будь ласка, надішли саме PDF-файл.")
         return
 
     try:
-        # Сообщаем о начале обработки
+        # Отправляем сообщение о начале обработки
         bot.send_message(message.chat.id, "Файл отримано. Завантажую на Mega та розділяю...")
 
-        # Получаем информацию о файле
+        # Получаем информацию о файле в Telegram
+        logger.info("TG: getting file info")
         file_info = bot.get_file(message.document.file_id)
 
-        # Скачиваем файл
+        # Скачиваем файл из Telegram по его пути
+        logger.info("TG: downloading file")
         downloaded_file = bot.download_file(file_info.file_path)
 
-        # Создаём временную папку
+        # Создаём временную папку для обработки файлов
         with tempfile.TemporaryDirectory() as temp_dir:
-            # Путь к исходному PDF
+            # Формируем путь для сохранения исходного PDF во временной папке
             original_pdf_path = os.path.join(temp_dir, message.document.file_name)
 
-            # Сохраняем файл
+            # Сохраняем скачанный PDF на диск
+            logger.info("FS: saving original pdf -> %s", original_pdf_path)
             with open(original_pdf_path, "wb") as new_file:
                 new_file.write(downloaded_file)
 
@@ -447,35 +499,40 @@ def handle_document(message):
             # Находим или создаём папку Kvitancii
             split_folder_id = find_or_create_folder(mega_client, MEGA_SPLIT_FOLDER)
 
-            # Загружаем исходный PDF
+            # Загружаем исходный PDF в папку Orginal
             upload_file_to_mega(mega_client, original_pdf_path, original_folder_id)
 
-            # Создаём папку для разделённых файлов
+            # Создаём подпапку для разделённых файлов
             output_folder = os.path.join(temp_dir, "split_pages")
+
+            # Создаём эту папку на диске
             os.makedirs(output_folder, exist_ok=True)
 
             # Делим PDF на отдельные страницы
+            logger.info("PDF: splitting start")
             split_files = split_pdf_by_pages(original_pdf_path, output_folder)
+            logger.info("PDF: splitting done, files=%s", len(split_files))
 
-            # Загружаем все разделённые файлы
+            # Перебираем все разделённые файлы
             for split_file in split_files:
+                # Загружаем каждый разделённый файл в папку Kvitancii
                 upload_file_to_mega(mega_client, split_file, split_folder_id)
 
-            # Сообщаем об успехе
+            # Сообщаем пользователю об успешной обработке
             bot.send_message(
                 message.chat.id,
                 f"Готово. Оригінальний PDF завантажено в «{MEGA_ORIGINAL_FOLDER}», "
                 f"а {len(split_files)} окремих файлів — у «{MEGA_SPLIT_FOLDER}»."
             )
 
-        # Убираем пользователя из ожидания
+        # Убираем пользователя из списка ожидающих PDF
         waiting_for_pdf.discard(message.chat.id)
 
     except Exception as e:
         # Пишем ошибку в лог
         logger.exception("Ошибка при обработке PDF")
 
-        # Сообщаем пользователю
+        # Сообщаем пользователю более понятную ошибку
         bot.send_message(message.chat.id, f"Сталася помилка: {e}")
 
 
