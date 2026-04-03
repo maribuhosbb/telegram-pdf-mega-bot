@@ -19,14 +19,17 @@ logger = logging.getLogger(__name__)
 # =========================
 # ENV VARIABLES
 # =========================
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-MEGA_EMAIL = os.getenv("MEGA_EMAIL")
-MEGA_PASSWORD = os.getenv("MEGA_PASSWORD")
-MEGA_ORIGINAL_FOLDER = os.getenv("MEGA_ORIGINAL_FOLDER", "Original")
-MEGA_SPLIT_FOLDER = os.getenv("MEGA_SPLIT_FOLDER", "Kvitancii")
-RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+MEGA_EMAIL = os.getenv("MEGA_EMAIL", "").strip()
+MEGA_PASSWORD = os.getenv("MEGA_PASSWORD", "").strip()
+
+RAILWAY_PUBLIC_DOMAIN = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
 PORT = int(os.getenv("PORT", "10000"))
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "telegram-webhook-secret")
+
+app = Flask(__name__)
+WEBHOOK_PATH = f"/webhook/{WEBHOOK_SECRET}"
+WEBHOOK_URL = f"https://{RAILWAY_PUBLIC_DOMAIN}{WEBHOOK_PATH}" if RAILWAY_PUBLIC_DOMAIN else None
 
 # =========================
 # LOCAL TEMP FOLDERS
@@ -394,3 +397,4 @@ def ensure_webhook():
 if __name__ == "__main__":
     ensure_webhook()
     app.run(host="0.0.0.0", port=PORT)
+
