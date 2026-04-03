@@ -250,10 +250,10 @@ def start_command(message):
     markup.add(btn_upload)
 
     bot.send_message(
-        message.chat.id,
-        "Натисни кнопку «Завантажити та Розділити», а потім надішли PDF-файл.",
-        reply_markup=markup
-    )
+    message.chat.id,
+    f"Готово. Оригінальний PDF завантажено в «Orginal», а {len(split_files)} окремих файлів — у «Kvitancii».",
+    reply_markup=build_main_keyboard()
+)
 
 
 @bot.message_handler(func=lambda message: message.text == "Завантажити та Розділити")
@@ -265,60 +265,58 @@ def ask_for_pdf(message):
 @bot.message_handler(content_types=["document"])
 def handle_document(message):
     if message.chat.id not in waiting_for_pdf:
-        bot.send_message(message.chat.id, "Спочатку натисни кнопку «Завантажити та Розділити».")
+        bot.send_message(
+            message.chat.id,
+            "Спочатку натисни кнопку «Завантажити та Розділити».",
+            reply_markup=build_main_keyboard()
+        )
         return
 
     if not message.document.file_name.lower().endswith(".pdf"):
-        bot.send_message(message.chat.id, "Будь ласка, надішли саме PDF-файл.")
+        bot.send_message(
+            message.chat.id,
+            "Будь ласка, надішли саме PDF-файл.",
+            reply_markup=build_main_keyboard()
+        )
         return
 
     try:
-        import time
-
-        bot.send_message(message.chat.id, "Файл отримано. Завантажую на Mega та розділяю...")
-
-        logger.info("TG: getting file info")
         file_info = bot.get_file(message.document.file_id)
-
-        logger.info("TG: downloading file")
         downloaded_file = bot.download_file(file_info.file_path)
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            original_pdf_path = os.path.join(temp_dir, message.document.file_name)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
+            temp_pdf.write(downloaded_file)
+            temp_pdf_path = temp_pdf.name
 
-            logger.info("FS: saving original pdf -> %s", original_pdf_path)
-            with open(original_pdf_path, "wb") as new_file:
-                new_file.write(downloaded_file)
+        original_save_path = os.path.join(ORIGINAL_FOLDER, message.document.file_name)
+        with open(original_save_path, "wb") as f:
+            f.write(downloaded_file)
 
-            ensure_mega_folder(MEGA_ORIGINAL_FOLDER)
-            ensure_mega_folder(MEGA_SPLIT_FOLDER)
+        bot.send_message(message.chat.id, "PDF отримано. Починаю розділення...")
 
-            upload_file_to_mega(original_pdf_path, MEGA_ORIGINAL_FOLDER)
-            time.sleep(2)
-
-            output_folder = os.path.join(temp_dir, "split_pages")
-            os.makedirs(output_folder, exist_ok=True)
-
-            logger.info("PDF: splitting start")
-            split_files = split_pdf_by_pages(original_pdf_path, output_folder)
-            logger.info("PDF: splitting done, files=%s", len(split_files))
-
-            for index, split_file in enumerate(split_files, start=1):
-                logger.info("UPLOAD SPLIT FILE %s/%s -> %s", index, len(split_files), split_file)
-                upload_file_to_mega(split_file, MEGA_SPLIT_FOLDER)
-                time.sleep(1)
-
-            bot.send_message(
-                message.chat.id,
-                f"Готово. Оригінальний PDF завантажено в «{MEGA_ORIGINAL_FOLDER}», "
-                f"а {len(split_files)} окремих файлів — у «{MEGA_SPLIT_FOLDER}»."
-            )
+        split_files = split_pdf_into_pages(temp_pdf_path, SPLIT_FOLDER)
 
         waiting_for_pdf.discard(message.chat.id)
 
+        bot.send_message(
+            message.chat.id,
+            f"Готово. Оригінальний PDF завантажено в «Orginal», а {len(split_files)} окремих файлів — у «Kvitancii».",
+            reply_markup=build_main_keyboard()
+        )
+
+        try:
+            os.remove(temp_pdf_path)
+        except Exception:
+            pass
+
     except Exception as e:
-        logger.exception("Ошибка при обработке PDF")
-        bot.send_message(message.chat.id, f"Сталася помилка: {e}")
+        waiting_for_pdf.discard(message.chat.id)
+        bot.send_message(
+            message.chat.id,
+            f"Сталася помилка: {e}",
+            reply_markup=build_main_keyboard()
+        )
+        print(f"Ошибка обработки файла: {e}")
 
 
 def ensure_webhook():
