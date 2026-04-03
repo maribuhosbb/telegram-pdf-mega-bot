@@ -1,9 +1,9 @@
 import os
 import re
+import time
 import tempfile
 import logging
 import subprocess
-import shlex
 import requests
 
 from flask import Flask, request
@@ -16,35 +16,59 @@ import pdfplumber
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# =========================
+# ENV VARIABLES
+# =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MEGA_EMAIL = os.getenv("MEGA_EMAIL")
 MEGA_PASSWORD = os.getenv("MEGA_PASSWORD")
 MEGA_ORIGINAL_FOLDER = os.getenv("MEGA_ORIGINAL_FOLDER", "Original")
 MEGA_SPLIT_FOLDER = os.getenv("MEGA_SPLIT_FOLDER", "Kvitancii")
-RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "")
 PORT = int(os.getenv("PORT", "10000"))
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "telegram-webhook-secret")
 
+# =========================
+# LOCAL TEMP FOLDERS
+# =========================
+LOCAL_ORIGINAL_FOLDER = "original_pdfs"
+LOCAL_SPLIT_FOLDER = "split_pdfs"
+
+os.makedirs(LOCAL_ORIGINAL_FOLDER, exist_ok=True)
+os.makedirs(LOCAL_SPLIT_FOLDER, exist_ok=True)
+
 if not BOT_TOKEN or not MEGA_EMAIL or not MEGA_PASSWORD:
     raise ValueError("Не заданы BOT_TOKEN, MEGA_EMAIL или MEGA_PASSWORD в переменных окружения.")
-
-logger.info("BOT_TOKEN MASK: %s...%s", BOT_TOKEN[:10], BOT_TOKEN[-6:])
-
-check_response = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=20)
-logger.info("TELEGRAM TOKEN CHECK STATUS: %s", check_response.status_code)
-logger.info("TELEGRAM TOKEN CHECK BODY: %s", check_response.text)
 
 bot = telebot.TeleBot(BOT_TOKEN)
 waiting_for_pdf = set()
 
 app = Flask(__name__)
 WEBHOOK_PATH = f"/webhook/{WEBHOOK_SECRET}"
-WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}" if RENDER_EXTERNAL_URL else None
+WEBHOOK_URL = f"{RENDER_EXTERNAL_URL.rstrip('/')}{WEBHOOK_PATH}" if RENDER_EXTERNAL_URL else None
 
 
+# =========================
+# KEYBOARD
+# =========================
+def build_main_keyboard():
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    btn_upload = types.KeyboardButton("Завантажити та Розділити")
+    markup.add(btn_upload)
+    return markup
+
+
+# =========================
+# FLASK ROUTES
+# =========================
 @app.route("/")
 def home():
-    return "Telegram bot is running via webhook + megatools!"
+    return "Telegram bot is running via webhook + megatools!", 200
+
+
+@app.route("/healthz", methods=["GET"])
+def healthcheck():
+    return "ok", 200
 
 
 @app.route(WEBHOOK_PATH, methods=["POST"])
@@ -61,31 +85,17 @@ def set_webhook_route():
         return "RENDER_EXTERNAL_URL is not set", 500
 
     try:
-        delete_response = requests.get(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook",
-            params={"drop_pending_updates": "true"},
-            timeout=30
-        )
-        logger.info("DELETE WEBHOOK STATUS: %s", delete_response.status_code)
-        logger.info("DELETE WEBHOOK BODY: %s", delete_response.text)
-
-        set_response = requests.get(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
-            params={"url": WEBHOOK_URL},
-            timeout=30
-        )
-        logger.info("SET WEBHOOK STATUS: %s", set_response.status_code)
-        logger.info("SET WEBHOOK BODY: %s", set_response.text)
-
-        return f"Webhook set: {set_response.text}", 200
+        set_telegram_webhook()
+        return f"Webhook set to: {WEBHOOK_URL}", 200
     except Exception as e:
         logger.exception("Ошибка установки webhook")
         return f"Webhook set error: {e}", 500
 
 
+# =========================
+# MEGA FUNCTIONS
+# =========================
 def run_megatools_command(cmd):
-    import subprocess
-
     full_cmd = [
         *cmd,
         "--username", MEGA_EMAIL,
@@ -115,17 +125,13 @@ def ensure_mega_folder(folder_name):
     try:
         run_megatools_command(["megals", f"/Root/{folder_name}"])
         logger.info("MEGA folder exists: %s", folder_name)
-        return
     except Exception:
         logger.info("MEGA folder missing, creating: %s", folder_name)
-
-    run_megatools_command(["megamkdir", f"/Root/{folder_name}"])
-    logger.info("MEGA folder created: %s", folder_name)
+        run_megatools_command(["megamkdir", f"/Root/{folder_name}"])
+        logger.info("MEGA folder created: %s", folder_name)
 
 
 def upload_file_to_mega(file_path, folder_name):
-    import time
-    time.sleep(2)
     filename = os.path.basename(file_path)
 
     try:
@@ -134,12 +140,18 @@ def upload_file_to_mega(file_path, folder_name):
     except Exception:
         logger.info("MEGA: file not exists, skip remove -> %s", filename)
 
+    time.sleep(1)
+
     run_megatools_command([
         "megaput",
         "--path", f"/Root/{folder_name}/",
         file_path
     ])
 
+
+# =========================
+# PDF FUNCTIONS
+# =========================
 def extract_text_from_page(pdf_path, page_number):
     with pdfplumber.open(pdf_path) as pdf:
         page = pdf.pages[page_number]
@@ -243,23 +255,27 @@ def split_pdf_by_pages(input_pdf_path, output_folder):
     return created_files
 
 
+# =========================
+# TELEGRAM HANDLERS
+# =========================
 @bot.message_handler(commands=["start"])
 def start_command(message):
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    btn_upload = types.KeyboardButton("Завантажити та Розділити")
-    markup.add(btn_upload)
-
+    waiting_for_pdf.discard(message.chat.id)
     bot.send_message(
-    message.chat.id,
-    f"Готово. Оригінальний PDF завантажено в «Orginal», а {len(split_files)} окремих файлів — у «Kvitancii».",
-    reply_markup=build_main_keyboard()
-)
+        message.chat.id,
+        "Натисни кнопку «Завантажити та Розділити», а потім надішли PDF-файл.",
+        reply_markup=build_main_keyboard()
+    )
 
 
 @bot.message_handler(func=lambda message: message.text == "Завантажити та Розділити")
 def ask_for_pdf(message):
     waiting_for_pdf.add(message.chat.id)
-    bot.send_message(message.chat.id, "Надішли PDF-файл з квитанціями.")
+    bot.send_message(
+        message.chat.id,
+        "Надішли PDF-файл з квитанціями.",
+        reply_markup=build_main_keyboard()
+    )
 
 
 @bot.message_handler(content_types=["document"])
@@ -273,6 +289,7 @@ def handle_document(message):
         return
 
     if not message.document.file_name.lower().endswith(".pdf"):
+        waiting_for_pdf.discard(message.chat.id)
         bot.send_message(
             message.chat.id,
             "Будь ласка, надішли саме PDF-файл.",
@@ -280,7 +297,12 @@ def handle_document(message):
         )
         return
 
+    temp_pdf_path = None
+
     try:
+        ensure_mega_folder(MEGA_ORIGINAL_FOLDER)
+        ensure_mega_folder(MEGA_SPLIT_FOLDER)
+
         file_info = bot.get_file(message.document.file_id)
         downloaded_file = bot.download_file(file_info.file_path)
 
@@ -288,35 +310,71 @@ def handle_document(message):
             temp_pdf.write(downloaded_file)
             temp_pdf_path = temp_pdf.name
 
-        original_save_path = os.path.join(ORIGINAL_FOLDER, message.document.file_name)
+        original_filename = message.document.file_name
+        original_save_path = os.path.join(LOCAL_ORIGINAL_FOLDER, original_filename)
+
         with open(original_save_path, "wb") as f:
             f.write(downloaded_file)
 
         bot.send_message(message.chat.id, "PDF отримано. Починаю розділення...")
 
-        split_files = split_pdf_into_pages(temp_pdf_path, SPLIT_FOLDER)
+        split_files = split_pdf_by_pages(temp_pdf_path, LOCAL_SPLIT_FOLDER)
+
+        upload_file_to_mega(original_save_path, MEGA_ORIGINAL_FOLDER)
+
+        for split_file_path in split_files:
+            upload_file_to_mega(split_file_path, MEGA_SPLIT_FOLDER)
 
         waiting_for_pdf.discard(message.chat.id)
 
         bot.send_message(
             message.chat.id,
-            f"Готово. Оригінальний PDF завантажено в «Orginal», а {len(split_files)} окремих файлів — у «Kvitancii».",
+            f"Готово. Оригінальний PDF завантажено в «Original», а {len(split_files)} окремих файлів — у «Kvitancii».",
             reply_markup=build_main_keyboard()
         )
 
-        try:
-            os.remove(temp_pdf_path)
-        except Exception:
-            pass
-
     except Exception as e:
         waiting_for_pdf.discard(message.chat.id)
+        logger.exception("Ошибка обработки файла")
         bot.send_message(
             message.chat.id,
             f"Сталася помилка: {e}",
             reply_markup=build_main_keyboard()
         )
-        print(f"Ошибка обработки файла: {e}")
+
+    finally:
+        if temp_pdf_path and os.path.exists(temp_pdf_path):
+            try:
+                os.remove(temp_pdf_path)
+            except Exception:
+                logger.warning("Не удалось удалить временный файл: %s", temp_pdf_path)
+
+
+# =========================
+# WEBHOOK
+# =========================
+def set_telegram_webhook():
+    if not WEBHOOK_URL:
+        raise RuntimeError("RENDER_EXTERNAL_URL не задан.")
+
+    delete_response = requests.get(
+        f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook",
+        params={"drop_pending_updates": "true"},
+        timeout=30
+    )
+    logger.info("DELETE WEBHOOK STATUS: %s", delete_response.status_code)
+    logger.info("DELETE WEBHOOK BODY: %s", delete_response.text)
+
+    set_response = requests.get(
+        f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
+        params={"url": WEBHOOK_URL},
+        timeout=30
+    )
+    logger.info("SET WEBHOOK STATUS: %s", set_response.status_code)
+    logger.info("SET WEBHOOK BODY: %s", set_response.text)
+
+    if set_response.status_code != 200:
+        raise RuntimeError(f"Не удалось установить webhook: {set_response.text}")
 
 
 def ensure_webhook():
@@ -325,26 +383,14 @@ def ensure_webhook():
         return
 
     try:
-        delete_response = requests.get(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook",
-            params={"drop_pending_updates": "true"},
-            timeout=30
-        )
-        logger.info("DELETE WEBHOOK STATUS: %s", delete_response.status_code)
-        logger.info("DELETE WEBHOOK BODY: %s", delete_response.text)
-
-        set_response = requests.get(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
-            params={"url": WEBHOOK_URL},
-            timeout=30
-        )
-        logger.info("SET WEBHOOK STATUS: %s", set_response.status_code)
-        logger.info("SET WEBHOOK BODY: %s", set_response.text)
-
+        set_telegram_webhook()
     except Exception as e:
         logger.exception("Ошибка установки webhook: %s", e)
 
 
+# =========================
+# START
+# =========================
 if __name__ == "__main__":
     ensure_webhook()
     app.run(host="0.0.0.0", port=PORT)
