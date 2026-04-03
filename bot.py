@@ -1,9 +1,9 @@
 import os
 import re
-import time
 import tempfile
 import logging
 import subprocess
+import shlex
 import requests
 
 from flask import Flask, request
@@ -16,62 +16,35 @@ import pdfplumber
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# =========================
-# ENV VARIABLES
-# =========================
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-MEGA_EMAIL = os.getenv("MEGA_EMAIL", "").strip()
-MEGA_PASSWORD = os.getenv("MEGA_PASSWORD", "").strip()
-
-RAILWAY_PUBLIC_DOMAIN = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+MEGA_EMAIL = os.getenv("MEGA_EMAIL")
+MEGA_PASSWORD = os.getenv("MEGA_PASSWORD")
+MEGA_ORIGINAL_FOLDER = os.getenv("MEGA_ORIGINAL_FOLDER", "Orginal")
+MEGA_SPLIT_FOLDER = os.getenv("MEGA_SPLIT_FOLDER", "Kvitancii")
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 PORT = int(os.getenv("PORT", "10000"))
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "telegram-webhook-secret")
 
-app = Flask(__name__)
-WEBHOOK_PATH = f"/webhook/{WEBHOOK_SECRET}"
-WEBHOOK_URL = f"https://{RAILWAY_PUBLIC_DOMAIN}{WEBHOOK_PATH}" if RAILWAY_PUBLIC_DOMAIN else None
-
-# =========================
-# LOCAL TEMP FOLDERS
-# =========================
-LOCAL_ORIGINAL_FOLDER = "original_pdfs"
-LOCAL_SPLIT_FOLDER = "split_pdfs"
-
-os.makedirs(LOCAL_ORIGINAL_FOLDER, exist_ok=True)
-os.makedirs(LOCAL_SPLIT_FOLDER, exist_ok=True)
-
 if not BOT_TOKEN or not MEGA_EMAIL or not MEGA_PASSWORD:
     raise ValueError("Не заданы BOT_TOKEN, MEGA_EMAIL или MEGA_PASSWORD в переменных окружения.")
+
+logger.info("BOT_TOKEN MASK: %s...%s", BOT_TOKEN[:10], BOT_TOKEN[-6:])
+
+check_response = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=20)
+logger.info("TELEGRAM TOKEN CHECK STATUS: %s", check_response.status_code)
+logger.info("TELEGRAM TOKEN CHECK BODY: %s", check_response.text)
 
 bot = telebot.TeleBot(BOT_TOKEN)
 waiting_for_pdf = set()
 
 app = Flask(__name__)
 WEBHOOK_PATH = f"/webhook/{WEBHOOK_SECRET}"
-WEBHOOK_URL = f"{RENDER_EXTERNAL_URL.rstrip('/')}{WEBHOOK_PATH}" if RENDER_EXTERNAL_URL else None
+WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}" if RENDER_EXTERNAL_URL else None
 
 
-# =========================
-# KEYBOARD
-# =========================
-def build_main_keyboard():
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    btn_upload = types.KeyboardButton("Завантажити та Розділити")
-    markup.add(btn_upload)
-    return markup
-
-
-# =========================
-# FLASK ROUTES
-# =========================
 @app.route("/")
 def home():
-    return "Telegram bot is running via webhook + megatools!", 200
-
-
-@app.route("/healthz", methods=["GET"])
-def healthcheck():
-    return "ok", 200
+    return "Telegram bot is running via webhook + megatools!"
 
 
 @app.route(WEBHOOK_PATH, methods=["POST"])
@@ -88,38 +61,67 @@ def set_webhook_route():
         return "RENDER_EXTERNAL_URL is not set", 500
 
     try:
-        set_telegram_webhook()
-        return f"Webhook set to: {WEBHOOK_URL}", 200
+        delete_response = requests.get(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook",
+            params={"drop_pending_updates": "true"},
+            timeout=30
+        )
+        logger.info("DELETE WEBHOOK STATUS: %s", delete_response.status_code)
+        logger.info("DELETE WEBHOOK BODY: %s", delete_response.text)
+
+        set_response = requests.get(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
+            params={"url": WEBHOOK_URL},
+            timeout=30
+        )
+        logger.info("SET WEBHOOK STATUS: %s", set_response.status_code)
+        logger.info("SET WEBHOOK BODY: %s", set_response.text)
+
+        return f"Webhook set: {set_response.text}", 200
     except Exception as e:
         logger.exception("Ошибка установки webhook")
         return f"Webhook set error: {e}", 500
 
 
-# =========================
-# MEGA FUNCTIONS
-# =========================
-def run_megatools_command(cmd):
-    full_cmd = [
-        *cmd,
+def run_megatools_command(args):
+    cmd = [
+        args[0],
         "--username", MEGA_EMAIL,
         "--password", MEGA_PASSWORD,
-        "--no-ask-password"
+        "--no-ask-password",
+        *args[1:]
     ]
 
-    logger.info("MEGATOOLS CMD: %s", " ".join(full_cmd))
+    safe_cmd = []
+    skip_next = False
+    for i, part in enumerate(cmd):
+        if skip_next:
+            skip_next = False
+            continue
+        if part == "--password" and i + 1 < len(cmd):
+            safe_cmd.extend(["--password", "******"])
+            skip_next = True
+        else:
+            safe_cmd.append(part)
+
+    logger.info("MEGATOOLS CMD: %s", " ".join(shlex.quote(x) for x in safe_cmd))
 
     result = subprocess.run(
-        full_cmd,
+        cmd,
         capture_output=True,
-        text=True
+        text=True,
+        check=False
     )
 
     logger.info("MEGATOOLS EXIT CODE: %s", result.returncode)
-    logger.info("MEGATOOLS STDOUT: %s", result.stdout)
-    logger.info("MEGATOOLS STDERR: %s", result.stderr)
+    logger.info("MEGATOOLS STDOUT: %s", result.stdout.strip())
+    logger.info("MEGATOOLS STDERR: %s", result.stderr.strip())
 
     if result.returncode != 0:
-        raise RuntimeError(f"Помилка megatools (code={result.returncode}): {result.stderr}")
+        raise RuntimeError(
+            f"Помилка megatools (code={result.returncode}): "
+            f"{result.stderr.strip() or result.stdout.strip() or 'невідома помилка'}"
+        )
 
     return result.stdout.strip()
 
@@ -128,10 +130,12 @@ def ensure_mega_folder(folder_name):
     try:
         run_megatools_command(["megals", f"/Root/{folder_name}"])
         logger.info("MEGA folder exists: %s", folder_name)
+        return
     except Exception:
         logger.info("MEGA folder missing, creating: %s", folder_name)
-        run_megatools_command(["megamkdir", f"/Root/{folder_name}"])
-        logger.info("MEGA folder created: %s", folder_name)
+
+    run_megatools_command(["megamkdir", f"/Root/{folder_name}"])
+    logger.info("MEGA folder created: %s", folder_name)
 
 
 def upload_file_to_mega(file_path, folder_name):
@@ -143,8 +147,6 @@ def upload_file_to_mega(file_path, folder_name):
     except Exception:
         logger.info("MEGA: file not exists, skip remove -> %s", filename)
 
-    time.sleep(1)
-
     run_megatools_command([
         "megaput",
         "--path", f"/Root/{folder_name}/",
@@ -152,9 +154,6 @@ def upload_file_to_mega(file_path, folder_name):
     ])
 
 
-# =========================
-# PDF FUNCTIONS
-# =========================
 def extract_text_from_page(pdf_path, page_number):
     with pdfplumber.open(pdf_path) as pdf:
         page = pdf.pages[page_number]
@@ -258,126 +257,77 @@ def split_pdf_by_pages(input_pdf_path, output_folder):
     return created_files
 
 
-# =========================
-# TELEGRAM HANDLERS
-# =========================
 @bot.message_handler(commands=["start"])
 def start_command(message):
-    waiting_for_pdf.discard(message.chat.id)
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    btn_upload = types.KeyboardButton("Завантажити та Розділити")
+    markup.add(btn_upload)
+
     bot.send_message(
         message.chat.id,
         "Натисни кнопку «Завантажити та Розділити», а потім надішли PDF-файл.",
-        reply_markup=build_main_keyboard()
+        reply_markup=markup
     )
 
 
 @bot.message_handler(func=lambda message: message.text == "Завантажити та Розділити")
 def ask_for_pdf(message):
     waiting_for_pdf.add(message.chat.id)
-    bot.send_message(
-        message.chat.id,
-        "Надішли PDF-файл з квитанціями.",
-        reply_markup=build_main_keyboard()
-    )
+    bot.send_message(message.chat.id, "Надішли PDF-файл з квитанціями.")
 
 
 @bot.message_handler(content_types=["document"])
 def handle_document(message):
     if message.chat.id not in waiting_for_pdf:
-        bot.send_message(
-            message.chat.id,
-            "Спочатку натисни кнопку «Завантажити та Розділити».",
-            reply_markup=build_main_keyboard()
-        )
+        bot.send_message(message.chat.id, "Спочатку натисни кнопку «Завантажити та Розділити».")
         return
 
     if not message.document.file_name.lower().endswith(".pdf"):
-        waiting_for_pdf.discard(message.chat.id)
-        bot.send_message(
-            message.chat.id,
-            "Будь ласка, надішли саме PDF-файл.",
-            reply_markup=build_main_keyboard()
-        )
+        bot.send_message(message.chat.id, "Будь ласка, надішли саме PDF-файл.")
         return
 
-    temp_pdf_path = None
-
     try:
-        ensure_mega_folder(MEGA_ORIGINAL_FOLDER)
-        ensure_mega_folder(MEGA_SPLIT_FOLDER)
+        bot.send_message(message.chat.id, "Файл отримано. Завантажую на Mega та розділяю...")
 
+        logger.info("TG: getting file info")
         file_info = bot.get_file(message.document.file_id)
+
+        logger.info("TG: downloading file")
         downloaded_file = bot.download_file(file_info.file_path)
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
-            temp_pdf.write(downloaded_file)
-            temp_pdf_path = temp_pdf.name
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original_pdf_path = os.path.join(temp_dir, message.document.file_name)
 
-        original_filename = message.document.file_name
-        original_save_path = os.path.join(LOCAL_ORIGINAL_FOLDER, original_filename)
+            logger.info("FS: saving original pdf -> %s", original_pdf_path)
+            with open(original_pdf_path, "wb") as new_file:
+                new_file.write(downloaded_file)
 
-        with open(original_save_path, "wb") as f:
-            f.write(downloaded_file)
+            ensure_mega_folder(MEGA_ORIGINAL_FOLDER)
+            ensure_mega_folder(MEGA_SPLIT_FOLDER)
 
-        bot.send_message(message.chat.id, "PDF отримано. Починаю розділення...")
+            upload_file_to_mega(original_pdf_path, MEGA_ORIGINAL_FOLDER)
 
-        split_files = split_pdf_by_pages(temp_pdf_path, LOCAL_SPLIT_FOLDER)
+            output_folder = os.path.join(temp_dir, "split_pages")
+            os.makedirs(output_folder, exist_ok=True)
 
-        upload_file_to_mega(original_save_path, MEGA_ORIGINAL_FOLDER)
+            logger.info("PDF: splitting start")
+            split_files = split_pdf_by_pages(original_pdf_path, output_folder)
+            logger.info("PDF: splitting done, files=%s", len(split_files))
 
-        for split_file_path in split_files:
-            upload_file_to_mega(split_file_path, MEGA_SPLIT_FOLDER)
+            for split_file in split_files:
+                upload_file_to_mega(split_file, MEGA_SPLIT_FOLDER)
+
+            bot.send_message(
+                message.chat.id,
+                f"Готово. Оригінальний PDF завантажено в «{MEGA_ORIGINAL_FOLDER}», "
+                f"а {len(split_files)} окремих файлів — у «{MEGA_SPLIT_FOLDER}»."
+            )
 
         waiting_for_pdf.discard(message.chat.id)
-
-        bot.send_message(
-            message.chat.id,
-            f"Готово. Оригінальний PDF завантажено в «Original», а {len(split_files)} окремих файлів — у «Kvitancii».",
-            reply_markup=build_main_keyboard()
-        )
 
     except Exception as e:
-        waiting_for_pdf.discard(message.chat.id)
-        logger.exception("Ошибка обработки файла")
-        bot.send_message(
-            message.chat.id,
-            f"Сталася помилка: {e}",
-            reply_markup=build_main_keyboard()
-        )
-
-    finally:
-        if temp_pdf_path and os.path.exists(temp_pdf_path):
-            try:
-                os.remove(temp_pdf_path)
-            except Exception:
-                logger.warning("Не удалось удалить временный файл: %s", temp_pdf_path)
-
-
-# =========================
-# WEBHOOK
-# =========================
-def set_telegram_webhook():
-    if not WEBHOOK_URL:
-        raise RuntimeError("RENDER_EXTERNAL_URL не задан.")
-
-    delete_response = requests.get(
-        f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook",
-        params={"drop_pending_updates": "true"},
-        timeout=30
-    )
-    logger.info("DELETE WEBHOOK STATUS: %s", delete_response.status_code)
-    logger.info("DELETE WEBHOOK BODY: %s", delete_response.text)
-
-    set_response = requests.get(
-        f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
-        params={"url": WEBHOOK_URL},
-        timeout=30
-    )
-    logger.info("SET WEBHOOK STATUS: %s", set_response.status_code)
-    logger.info("SET WEBHOOK BODY: %s", set_response.text)
-
-    if set_response.status_code != 200:
-        raise RuntimeError(f"Не удалось установить webhook: {set_response.text}")
+        logger.exception("Ошибка при обработке PDF")
+        bot.send_message(message.chat.id, f"Сталася помилка: {e}")
 
 
 def ensure_webhook():
@@ -386,15 +336,26 @@ def ensure_webhook():
         return
 
     try:
-        set_telegram_webhook()
+        delete_response = requests.get(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook",
+            params={"drop_pending_updates": "true"},
+            timeout=30
+        )
+        logger.info("DELETE WEBHOOK STATUS: %s", delete_response.status_code)
+        logger.info("DELETE WEBHOOK BODY: %s", delete_response.text)
+
+        set_response = requests.get(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
+            params={"url": WEBHOOK_URL},
+            timeout=30
+        )
+        logger.info("SET WEBHOOK STATUS: %s", set_response.status_code)
+        logger.info("SET WEBHOOK BODY: %s", set_response.text)
+
     except Exception as e:
         logger.exception("Ошибка установки webhook: %s", e)
 
 
-# =========================
-# START
-# =========================
 if __name__ == "__main__":
     ensure_webhook()
     app.run(host="0.0.0.0", port=PORT)
-
